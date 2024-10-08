@@ -1,6 +1,6 @@
 /* *************************************************************************************************
  Process+TemporaryFile.swift
-   © 2020 YOCKOW.
+   © 2020,2024 YOCKOW.
      Licensed under MIT License.
      See "LICENSE.txt" for more information.
  ************************************************************************************************ */
@@ -33,7 +33,24 @@ extension TemporaryFile: ProcessIOConvertible {
   public typealias ProcessIO = TemporaryFile
 }
 
-private var _temporaryFileTable: [FileHandle:TemporaryFile] = [:]
+private final class _TemporaryFileTable: @unchecked Sendable {
+  private let _queue: DispatchQueue = .init(
+    label: "jp.YOCKOW.TemporaryFile._TemporaryFileTable.\(UUID().uuidString)",
+    attributes: .concurrent
+  )
+
+  private var _table: [FileHandle: TemporaryFile] = [:]
+
+  private init() {}
+
+  func withTable<T>(_ work: (inout [FileHandle: TemporaryFile]) throws -> T) rethrows -> T {
+    return try _queue.sync(flags: .barrier) {
+      return try work(&_table)
+    }
+  }
+
+  static let shared: _TemporaryFileTable = .init()
+}
 
 extension Process {
   public enum IOType {
@@ -61,10 +78,12 @@ extension Process {
       case let pipe as Pipe:
         return (pipe as! IO)
       case let fileHandle as FileHandle:
-        if let temporaryFile = _temporaryFileTable[fileHandle] {
-          return (temporaryFile as! IO)
+        return _TemporaryFileTable.shared.withTable {
+          if let temporaryFile = $0[fileHandle] {
+            return (temporaryFile as! IO)
+          }
+          return (fileHandle as! IO)
         }
-        return (fileHandle as! IO)
       default:
         fatalError("Unsupported IO.")
       }
@@ -78,9 +97,11 @@ extension Process {
       case let fileHandle as FileHandle:
         self[keyPath: propertyPath] = fileHandle
       case let temporaryFile as TemporaryFile:
-        let fh = try! temporaryFile._temporaryDirectory._fileHandle(for: temporaryFile)
-        self[keyPath: propertyPath] = fh
-        _temporaryFileTable[fh] = temporaryFile
+        _TemporaryFileTable.shared.withTable {
+          let fh = try! temporaryFile._temporaryDirectory._fileHandle(for: temporaryFile)
+          self[keyPath: propertyPath] = fh
+          $0[fh] = temporaryFile
+        }
       default:
         fatalError("Unsupported IO.")
       }

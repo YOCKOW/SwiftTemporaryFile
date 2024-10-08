@@ -1,15 +1,14 @@
 /* *************************************************************************************************
  TemporaryDirectory+File.swift
-   © 2018-2021 YOCKOW.
+   © 2018-2021,2024 YOCKOW.
      Licensed under MIT License.
      See "LICENSE.txt" for more information.
  ************************************************************************************************ */
- 
+
+import Dispatch
 import Foundation
 import yExtensions
 import yProtocols
-
-private let manager = FileManager.default
 
 /// Represents a temporary file.
 public typealias TemporaryFile = TemporaryDirectory.File
@@ -80,7 +79,7 @@ public final class TemporaryDirectory {
     guard parent.isExistingLocalDirectory else { throw TemporaryFileError.invalidURL }
     let uuid = UUID().base32EncodedString()
     let tmpDirURL = parent.appendingPathComponent("\(prefix)\(uuid)\(suffix)", isDirectory: true)
-    try manager.createDirectoryWithIntermediateDirectories(
+    try FileManager.default.createDirectoryWithIntermediateDirectories(
       at: tmpDirURL,
       attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
     )
@@ -119,7 +118,7 @@ public final class TemporaryDirectory {
   public func close() throws {
     if self.isClosed { throw TemporaryFileError.alreadyClosed }
     try self.closeAllTemporaryFiles()
-    try manager.removeItem(at: self._url)
+    try FileManager.default.removeItem(at: self._url)
     self.isClosed = true
   }
 
@@ -128,25 +127,39 @@ public final class TemporaryDirectory {
   }
 }
 
+// MARK: - Default Temporary Directory
+
+private let _defaultTemporaryDirectoryQueue = DispatchQueue(
+  label: "jp.YOCKOW.TemporaryFile.DefaultTemporaryDirectory",
+  attributes: .concurrent
+)
+
 private func _clean() {
-  guard let defaultTemporaryDir = TemporaryDirectory._default else { return }
-  try? defaultTemporaryDir.close()
-  TemporaryDirectory._default = nil
+  _defaultTemporaryDirectoryQueue.sync(flags: .barrier) {
+    guard let defaultTemporaryDir = TemporaryDirectory._default else { return }
+    try? defaultTemporaryDir.close()
+    TemporaryDirectory._default = nil
+  }
 }
+
 extension TemporaryDirectory {
-  fileprivate static var _default: TemporaryDirectory? = nil
+  nonisolated(unsafe) fileprivate static var _default: TemporaryDirectory? = nil
 
   /// The default temporary directory.
   public static var `default`: TemporaryDirectory {
-    guard let defaultTemporaryDir = _default else {
-      let newDefault = try! TemporaryDirectory()
-      _default = newDefault
-      atexit(_clean)
-      return newDefault
+    return _defaultTemporaryDirectoryQueue.sync(flags: .barrier) {
+      guard let defaultTemporaryDir = _default else {
+        let newDefault = try! TemporaryDirectory()
+        _default = newDefault
+        atexit(_clean)
+        return newDefault
+      }
+      return defaultTemporaryDir
     }
-    return defaultTemporaryDir
   }
 }
+
+// MARK: /Default Temporary Directory -
 
 extension TemporaryDirectory.File {
   /// Create a temporary file in `temporaryDirectory`.
@@ -160,7 +173,7 @@ extension TemporaryDirectory.File {
     if temporaryDirectory.isClosed { throw TemporaryFileError.alreadyClosed }
     let filename = prefix + UUID().base32EncodedString() + suffix
     let url = temporaryDirectory._url.appendingPathComponent(filename, isDirectory: false)
-    guard manager.createFile(
+    guard FileManager.default.createFile(
       atPath: url.path,
       contents: data,
       attributes: [.posixPermissions: NSNumber(value: Int16(0o600))]
@@ -193,7 +206,7 @@ extension TemporaryDirectory {
     let substance = try _substance(for: file)
     try substance.fileHandle.close()
     _fileSubstanceTable[file] = nil
-    try manager.removeItem(at: substance.url)
+    try FileManager.default.removeItem(at: substance.url)
   }
 
   fileprivate func _offset(in file: File) throws -> UInt64 {
@@ -286,7 +299,7 @@ extension TemporaryDirectory.File {
   /// This method calls `FileManager.copyItem(at:to:) throws` internally.
   public func copy(to destination: URL) throws {
     let url = try _temporaryDirectory._substance(for: self).url
-    try manager.copyItem(at: url, to: destination)
+    try FileManager.default.copyItem(at: url, to: destination)
   }
 }
 
