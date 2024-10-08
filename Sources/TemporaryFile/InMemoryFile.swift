@@ -1,12 +1,12 @@
 /* *************************************************************************************************
  InMemoryFile.swift
-   © 2019-2020 YOCKOW.
+   © 2019-2020,2024 YOCKOW.
      Licensed under MIT License.
      See "LICENSE.txt" for more information.
  ************************************************************************************************ */
 
 import Foundation
-@_implementationOnly import Ranges
+import Ranges
 import yExtensions
 import yProtocols
 

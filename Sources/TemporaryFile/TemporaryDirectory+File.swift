@@ -1,15 +1,14 @@
 /* *************************************************************************************************
  TemporaryDirectory+File.swift
-   © 2018-2021 YOCKOW.
+   © 2018-2021,2024 YOCKOW.
      Licensed under MIT License.
      See "LICENSE.txt" for more information.
  ************************************************************************************************ */
- 
+
+import Dispatch
 import Foundation
 import yExtensions
 import yProtocols
-
-private let manager = FileManager.default
 
 /// Represents a temporary file.
 public typealias TemporaryFile = TemporaryDirectory.File
@@ -44,7 +43,7 @@ public final class TemporaryDirectory {
     }
   }
 
-  fileprivate struct _FileSubstance {
+  internal struct _FileSubstance {
     let fileHandle: FileHandle
     let url: URL
 
@@ -54,16 +53,88 @@ public final class TemporaryDirectory {
     }
   }
 
-  fileprivate var _fileSubstanceTable: [File: _FileSubstance] = [:]
+  internal struct _State {
+    let url: URL
+    var fileSubstanceTable: [File: _FileSubstance] = [:]
+    fileprivate(set) var isClosed: Bool
 
-  public private(set) var isClosed: Bool = false
+    fileprivate func fileSubstance(for file: File) throws -> _FileSubstance {
+      guard let substance = fileSubstanceTable[file] else {
+        throw TemporaryFileError.alreadyClosed
+      }
+      return substance
+    }
 
-  internal let _url: URL // testable
+    func fileHandle(for file: File) throws -> FileHandle {
+      return try fileSubstance(for: file).fileHandle
+    }
+
+    mutating func close(file: File) throws {
+      let substance = try fileSubstance(for: file)
+      try substance.fileHandle.close()
+      fileSubstanceTable[file] = nil
+      try FileManager.default.removeItem(at: substance.url)
+    }
+
+    mutating func closeAllFiles() throws {
+      for file in fileSubstanceTable.keys {
+        try self.close(file: file)
+      }
+    }
+
+    func offset(in file: File) throws -> UInt64 {
+      return try fileHandle(for: file).offset()
+    }
+
+    func read(file: File, upToCount count: Int) throws -> Data? {
+      return try fileHandle(for: file).read(upToCount: count)
+    }
+
+    func seek(file: File, toOffset offset: UInt64) throws {
+      try fileHandle(for: file).seek(toOffset: offset)
+    }
+
+    func seekToEnd(of file: File) throws -> UInt64 {
+      try fileHandle(for: file).seekToEnd()
+    }
+
+    func synchronize(file: File) throws {
+      try fileHandle(for: file).synchronize()
+    }
+
+    func truncate(file: File, atOffset offset: UInt64) throws {
+      try fileHandle(for: file).truncate(atOffset: offset)
+    }
+
+    func write<D>(contentsOf data: D, to file: File) throws where D: DataProtocol {
+      try fileHandle(for: file).write(contentsOf: data)
+    }
+  }
+  private let _stateQueue: DispatchQueue
+  private var __state: _State
+
+  internal func _withState<T>(_ work: (inout _State) throws -> T) rethrows -> T {
+    return try _stateQueue.sync(flags: .barrier) {
+      return try work(&__state)
+    }
+  }
+
+  internal var _url: URL {
+    return _withState { $0.url }
+  }
+
+  public var isClosed: Bool {
+    return _withState { $0.isClosed }
+  }
 
   /// Use the directory at `url` temporarily.
   private init(_directoryAt url:URL) {
     assert(url.isExistingLocalDirectory, "Directory doesn't exist at \(url.absoluteString)")
-    self._url = url
+    self._stateQueue = .init(
+      label: "jp.YOCKOW.TemporaryFile.TemporaryDirectory.\(url.absoluteString)",
+      attributes: .concurrent
+    )
+    self.__state = .init(url: url, fileSubstanceTable: [:], isClosed: false)
   }
 
   /// Create a temporary directory. The path to the temporary directory will be
@@ -80,7 +151,7 @@ public final class TemporaryDirectory {
     guard parent.isExistingLocalDirectory else { throw TemporaryFileError.invalidURL }
     let uuid = UUID().base32EncodedString()
     let tmpDirURL = parent.appendingPathComponent("\(prefix)\(uuid)\(suffix)", isDirectory: true)
-    try manager.createDirectoryWithIntermediateDirectories(
+    try FileManager.default.createDirectoryWithIntermediateDirectories(
       at: tmpDirURL,
       attributes: [.posixPermissions: NSNumber(value: Int16(0o700))]
     )
@@ -98,9 +169,7 @@ public final class TemporaryDirectory {
 
   /// Remove all temporary files in the temporary directory represented by the receiver.
   public func closeAllTemporaryFiles() throws {
-    for file in _fileSubstanceTable.keys {
-      try _close(file: file)
-    }
+    try _withState { try $0.closeAllFiles() }
   }
 
   @available(*, deprecated, renamed: "closeAllTemporaryFiles()")
@@ -117,10 +186,12 @@ public final class TemporaryDirectory {
   /// All of the temporary files in the temporary directory will be removed.
   /// The directory itself will be also removed.
   public func close() throws {
-    if self.isClosed { throw TemporaryFileError.alreadyClosed }
-    try self.closeAllTemporaryFiles()
-    try manager.removeItem(at: self._url)
-    self.isClosed = true
+    try _withState {
+      if $0.isClosed { throw TemporaryFileError.alreadyClosed }
+      try $0.closeAllFiles()
+      try FileManager.default.removeItem(at: $0.url)
+      $0.isClosed = true
+    }
   }
 
   deinit {
@@ -128,25 +199,39 @@ public final class TemporaryDirectory {
   }
 }
 
+// MARK: - Default Temporary Directory
+
+private let _defaultTemporaryDirectoryQueue = DispatchQueue(
+  label: "jp.YOCKOW.TemporaryFile.DefaultTemporaryDirectory",
+  attributes: .concurrent
+)
+
 private func _clean() {
-  guard let defaultTemporaryDir = TemporaryDirectory._default else { return }
-  try? defaultTemporaryDir.close()
-  TemporaryDirectory._default = nil
+  _defaultTemporaryDirectoryQueue.sync(flags: .barrier) {
+    guard let defaultTemporaryDir = TemporaryDirectory._default else { return }
+    try? defaultTemporaryDir.close()
+    TemporaryDirectory._default = nil
+  }
 }
+
 extension TemporaryDirectory {
-  fileprivate static var _default: TemporaryDirectory? = nil
+  nonisolated(unsafe) fileprivate static var _default: TemporaryDirectory? = nil
 
   /// The default temporary directory.
   public static var `default`: TemporaryDirectory {
-    guard let defaultTemporaryDir = _default else {
-      let newDefault = try! TemporaryDirectory()
-      _default = newDefault
-      atexit(_clean)
-      return newDefault
+    return _defaultTemporaryDirectoryQueue.sync(flags: .barrier) {
+      guard let defaultTemporaryDir = _default else {
+        let newDefault = try! TemporaryDirectory()
+        _default = newDefault
+        atexit(_clean)
+        return newDefault
+      }
+      return defaultTemporaryDir
     }
-    return defaultTemporaryDir
   }
 }
+
+// MARK: /Default Temporary Directory -
 
 extension TemporaryDirectory.File {
   /// Create a temporary file in `temporaryDirectory`.
@@ -160,7 +245,7 @@ extension TemporaryDirectory.File {
     if temporaryDirectory.isClosed { throw TemporaryFileError.alreadyClosed }
     let filename = prefix + UUID().base32EncodedString() + suffix
     let url = temporaryDirectory._url.appendingPathComponent(filename, isDirectory: false)
-    guard manager.createFile(
+    guard FileManager.default.createFile(
       atPath: url.path,
       contents: data,
       attributes: [.posixPermissions: NSNumber(value: Int16(0o600))]
@@ -171,92 +256,50 @@ extension TemporaryDirectory.File {
 
     let fh = try FileHandle(forUpdating: url)
     let substance = TemporaryDirectory._FileSubstance(fileHandle: fh, url: url)
-    temporaryDirectory._fileSubstanceTable[self] = substance
+    temporaryDirectory._withState {
+      $0.fileSubstanceTable[self] = substance
+    }
   }
 
   public var isClosed: Bool {
-    return _temporaryDirectory._fileSubstanceTable[self] == nil
-  }
-}
-
-extension TemporaryDirectory {
-  private func _substance(for file: File) throws -> _FileSubstance {
-    guard let substance = _fileSubstanceTable[file] else { throw TemporaryFileError.alreadyClosed }
-    return substance
-  }
-
-  internal func _fileHandle(for file: File) throws -> FileHandle {
-    return try _substance(for: file).fileHandle
-  }
-
-  fileprivate func _close(file: File) throws {
-    let substance = try _substance(for: file)
-    try substance.fileHandle.close()
-    _fileSubstanceTable[file] = nil
-    try manager.removeItem(at: substance.url)
-  }
-
-  fileprivate func _offset(in file: File) throws -> UInt64 {
-    return try _fileHandle(for: file).offset()
-  }
-
-  fileprivate func _read(file: File, upToCount count: Int) throws -> Data? {
-    return try _fileHandle(for: file).read(upToCount: count)
-  }
-
-  fileprivate func _seek(file: File, toOffset offset: UInt64) throws {
-    try _fileHandle(for: file).seek(toOffset: offset)
-  }
-
-  fileprivate func _seekToEnd(of file: File) throws -> UInt64 {
-    try _fileHandle(for: file).seekToEnd()
-  }
-
-  fileprivate func _synchronize(file: File) throws {
-    try _fileHandle(for: file).synchronize()
-  }
-
-  fileprivate func _truncate(file: File, atOffset offset: UInt64) throws {
-    try _fileHandle(for: file).truncate(atOffset: offset)
-  }
-
-  fileprivate func _write<D>(contentsOf data: D, to file: File) throws where D: DataProtocol {
-    try _fileHandle(for: file).write(contentsOf: data)
+    return _temporaryDirectory._withState {
+      $0.fileSubstanceTable[self] == nil
+    }
   }
 }
 
 extension TemporaryDirectory.File: FileHandleProtocol {
   public func close() throws {
-    try _temporaryDirectory._close(file: self)
+    try _temporaryDirectory._withState { try $0.close(file: self) }
   }
 
   public func offset() throws -> UInt64 {
-    return try _temporaryDirectory._offset(in: self)
+    return try _temporaryDirectory._withState { try $0.offset(in: self) }
   }
 
   public func read(upToCount count: Int) throws -> Data? {
-    return try _temporaryDirectory._read(file: self, upToCount: count)
+    return try _temporaryDirectory._withState { try $0.read(file: self, upToCount: count) }
   }
 
   public func seek(toOffset offset: UInt64) throws {
-    try _temporaryDirectory._seek(file: self, toOffset: offset)
+    try _temporaryDirectory._withState { try $0.seek(file: self, toOffset: offset) }
   }
 
   @discardableResult
   public func seekToEnd() throws -> UInt64 {
-    return try _temporaryDirectory._seekToEnd(of: self)
+    return try _temporaryDirectory._withState { try $0.seekToEnd(of: self) }
   }
 
   public func synchronize() throws {
-    try _temporaryDirectory._synchronize(file: self)
+    try _temporaryDirectory._withState { try $0.synchronize(file: self) }
   }
 
   public func truncate(atOffset offset: UInt64) throws {
-    try _temporaryDirectory._truncate(file: self, atOffset: offset)
+    try _temporaryDirectory._withState { try $0.truncate(file: self, atOffset: offset) }
   }
 
   public func write<D>(contentsOf data: D) throws where D: DataProtocol {
-    try _temporaryDirectory._write(contentsOf: data, to: self)
+    try _temporaryDirectory._withState { try $0.write(contentsOf: data, to: self) }
   }
 }
 
@@ -285,8 +328,10 @@ extension TemporaryDirectory.File {
   /// Copy the file to `destination` at which to place the copy of it.
   /// This method calls `FileManager.copyItem(at:to:) throws` internally.
   public func copy(to destination: URL) throws {
-    let url = try _temporaryDirectory._substance(for: self).url
-    try manager.copyItem(at: url, to: destination)
+    try _temporaryDirectory._withState {
+      let url = try $0.fileSubstance(for: self).url
+      try FileManager.default.copyItem(at: url, to: destination)
+    }
   }
 }
 
