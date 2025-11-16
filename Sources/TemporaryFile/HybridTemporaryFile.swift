@@ -34,8 +34,11 @@ public final class HybridTemporaryFile: FileHandleProtocol {
     return false
   }
 
-  private init(representation: _Representation) {
+  private let _temporaryDirectory: TemporaryDirectory
+
+  private init(representation: _Representation, temporaryDirectory: TemporaryDirectory) {
     self._representation = representation
+    self._temporaryDirectory = temporaryDirectory
   }
 
   /// A Boolean value that indicates whether or not an instance of `InMemoryFile` should be used
@@ -49,7 +52,13 @@ public final class HybridTemporaryFile: FileHandleProtocol {
   public var threshold: UInt64 = defaultThreshold
 
   public convenience init() {
-    self.init(representation: .inMemory(InMemoryFile()))
+    self.init(representation: .inMemory(InMemoryFile()), temporaryDirectory: .default)
+  }
+
+  /// Initializes with specified `temporaryDirectory`.
+  /// This directory will be used when creating `TemporaryFile` is required.
+  public convenience init(temporaryDirectory: TemporaryDirectory) {
+    self.init(representation: .inMemory(InMemoryFile()), temporaryDirectory: temporaryDirectory)
   }
 
   public func close() throws {
@@ -138,7 +147,7 @@ public final class HybridTemporaryFile: FileHandleProtocol {
         }
         try inMemoryFile.close()
 
-        let temporaryFile = try TemporaryFile()
+        let temporaryFile = try TemporaryFile(in: _temporaryDirectory)
         try temporaryFile.write(contentsOf: currentData)
         try temporaryFile.write(contentsOf: data)
         self._representation = .onDisk(temporaryFile)
@@ -147,6 +156,22 @@ public final class HybridTemporaryFile: FileHandleProtocol {
       }
     case .onDisk(let temporaryFile):
       try temporaryFile.write(contentsOf: data)
+    }
+  }
+
+  /// Copy the file to `destination` at which to place the copy of it.
+  public func copy(to destination: URL) throws {
+
+    switch _representation {
+    case .inMemory(let inMemoryFile):
+      if !destination.isExistingLocalFile {
+        FileManager.default.createFile(atPath: destination.path, contents: nil)
+      }
+      let fh = try FileHandle(forWritingTo: destination)
+      try fh.write(contentsOf: inMemoryFile)
+      try fh.close()
+    case .onDisk(let temporaryFile):
+      try temporaryFile.copy(to: destination)
     }
   }
 }
