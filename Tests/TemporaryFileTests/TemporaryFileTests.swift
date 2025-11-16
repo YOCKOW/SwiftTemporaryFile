@@ -208,4 +208,25 @@ import Testing
     #expect(truncatedDataInMemory.count == 10)
     #expect(truncatedDataInMemory.allSatisfy({ $0 == 0xFF }))
   }
+
+  @Test func test_copy() throws {
+    let data = Data([0,1,2,3,4])
+
+    let tmpFile = HybridTemporaryFile()
+    try tmpFile.write(contentsOf: data)
+
+    let destination = URL.temporaryDirectory.appendingPathComponent(
+      "jp.YOCKOW.HybridTemporaryFile.test." + UUID().base32EncodedString(),
+      isDirectory: false
+    )
+
+    try tmpFile.copy(to: destination)
+
+    let copied = try FileHandle(forReadingFrom: destination)
+    defer { try? copied.close() }
+
+    #expect(copied.availableData == data)
+
+    try FileManager.default.removeItem(at: destination)
+  }
 }
