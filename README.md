@@ -12,6 +12,28 @@ It was originally written as a part of [SwiftCGIResponder](https://github.com/YO
 ## Dependencies
 
 <!-- SWIFT PACKAGE DEPENDENCIES MERMAID START -->
+```mermaid
+---
+title: TemporaryFile Dependencies
+---
+flowchart TD
+  swiftranges(["Ranges<br>@4.0.1"])
+  swifttemporaryfile["TemporaryFile"]
+  swiftunicodesupplement(["UnicodeSupplement<br>@2.0.0"])
+  yswiftextensions(["yExtensions<br>@2.0.0"])
+
+  click swiftranges href "https://github.com/YOCKOW/SwiftRanges.git"
+  click swiftunicodesupplement href "https://github.com/YOCKOW/SwiftUnicodeSupplement.git"
+  click yswiftextensions href "https://github.com/YOCKOW/ySwiftExtensions.git"
+
+  swifttemporaryfile ----> swiftranges
+  swifttemporaryfile --> yswiftextensions
+  swiftunicodesupplement ----> swiftranges
+  yswiftextensions ----> swiftranges
+  yswiftextensions --> swiftunicodesupplement
+
+
+```
 <!-- SWIFT PACKAGE DEPENDENCIES MERMAID END -->
 
 
