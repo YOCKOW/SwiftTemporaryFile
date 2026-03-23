@@ -5,13 +5,14 @@ It was originally written as a part of [SwiftCGIResponder](https://github.com/YO
 
 # Requirements
 
-- Swift 5, 6
-- macOS(>=10.15) or Linux
+- Swift 6.2
+- macOS(>=13) or Linux
 
 
 ## Dependencies
 
-![Dependencies](./dependencies.svg)
+<!-- SWIFT PACKAGE DEPENDENCIES MERMAID START -->
+<!-- SWIFT PACKAGE DEPENDENCIES MERMAID END -->
 
 
 # Usage
